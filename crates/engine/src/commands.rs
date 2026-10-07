@@ -3177,6 +3177,7 @@ fn open_project(s: &mut Session, path: &str) -> Result<Value> {
         s.toast(format!("Upgraded project from schema v{from} to v{}; the original is kept as a backup when you save", filmcraft_format::SCHEMA_VERSION));
     }
     let missing = crate::relink::on_open(s);
+    crate::transcript::upgrade_legacy_file_transcripts(s);
     Ok(json!({"path": path, "schemaVersion": from, "migrated": migrated, "missingMedia": missing}))
 }
 
@@ -3195,6 +3196,7 @@ fn recover(s: &mut Session, id: Option<&str>) -> Result<Value> {
         s.events.push(crate::Event::OpenSequence(seq));
     }
     crate::relink::on_open(s);
+    crate::transcript::upgrade_legacy_file_transcripts(s);
     // Our own journal must hold the recovered state before the old one is deleted.
     s.sync_persistence();
     if let Some(per) = s.persistence.as_mut() {

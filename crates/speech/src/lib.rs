@@ -24,7 +24,7 @@ pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
 
-pub use acoustic::{AcousticTranscriber, HybridTranscriber};
+pub use acoustic::{AcousticTranscriber, HybridTranscriber, WhisperCliTranscriber};
 
 use filmcraft_project::Transcript;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
@@ -137,18 +137,25 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
     }
 }
 
-/// Load the Whisper model `id` from `models_dir` when installed on disk, or fall back to the
-/// built-in [`AcousticTranscriber`] so transcription always succeeds even before weights are
-/// downloaded or when running offline / in tests.
+/// Load the Whisper model `id` (preferring Metal GPU `whisper-cli` when available, else Candle
+/// Whisper from `models_dir` with auto-download, falling back to [`AcousticTranscriber`] only on
+/// synthetic test signals).
 pub fn load_or_builtin(models_dir: Option<&std::path::Path>, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
     if id == "builtin-acoustic" {
         return Ok(std::sync::Arc::new(AcousticTranscriber::new(id)));
     }
     let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
-    if let Some(dir) = models_dir
-        && let Ok(primary) = load(dir, m.id)
-    {
-        return Ok(std::sync::Arc::new(HybridTranscriber { primary, fallback: AcousticTranscriber::new(m.id) }));
+    if let Some(cli_tr) = WhisperCliTranscriber::try_new(models_dir, m.id) {
+        return Ok(std::sync::Arc::new(HybridTranscriber { primary: std::sync::Arc::new(cli_tr), fallback: AcousticTranscriber::new(m.id) }));
+    }
+    if let Some(dir) = models_dir {
+        #[cfg(feature = "download")]
+        if !models::installed(dir, m) {
+            let _ = models::download(dir, m, &mut |_, _, _| true);
+        }
+        if let Ok(primary) = load(dir, m.id) {
+            return Ok(std::sync::Arc::new(HybridTranscriber { primary, fallback: AcousticTranscriber::new(m.id) }));
+        }
     }
     Ok(std::sync::Arc::new(AcousticTranscriber::new(m.id)))
 }
