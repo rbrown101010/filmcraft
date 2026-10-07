@@ -110,3 +110,37 @@ fn transcript_tab_selects_and_extracts_words() {
     assert_eq!(left, ["Hello", "there", "friend."]);
     assert_eq!(d.ids("text.transcript.word.").len(), 3);
 }
+
+#[test]
+fn descript_script_editor_transcribes_and_edits_ui() {
+    let mut d = Driver::demo();
+    d.ok("ui.set", json!({"workspace": "Captions and Graphics"}));
+    d.frames(2);
+    d.ok("ui.click", json!({"id": "text.tab.Transcript"}));
+    d.frames(3);
+
+    // Click the built-in Transcribe button directly from the UI empty state.
+    d.ok("ui.click", json!({"id": "text.transcript.generate"}));
+    d.frames(4);
+
+    let word_ids = d.ids("text.transcript.word.");
+    assert!(!word_ids.is_empty(), "clicking Transcribe populates script words");
+    assert!(!d.ids("text.transcript.scene.").is_empty(), "Descript scene headers are rendered");
+    assert!(!d.ids("text.transcript.pause.").is_empty(), "inline pause pills are rendered");
+    d.snapshot("descript-script");
+
+    // Remove filler words via the UI toolbar button.
+    let before = word_ids.len();
+    d.ok("ui.click", json!({"id": "text.transcript.removeFillers"}));
+    d.frames(3);
+    let after = d.ids("text.transcript.word.").len();
+    assert!(after < before, "removing fillers reduced word count ({before} -> {after})");
+
+    // Switch to Graphics tab and create a new graphic text layer.
+    d.ok("ui.click", json!({"id": "text.tab.Graphics"}));
+    d.frames(3);
+    d.ok("ui.click", json!({"id": "text.graphics.newText"}));
+    d.frames(3);
+    assert!(!d.ids("text.graphics.row.").is_empty(), "Graphics tab lists newly created text layer");
+    assert!(!d.ids("text.graphics.text.").is_empty(), "Graphics tab exposes inline text editor");
+}

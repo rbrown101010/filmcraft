@@ -295,3 +295,37 @@ fn captions_never_overlap_with_dense_words() {
     let b = caption_blocks(&words, &rules, R);
     check_blocks(&b, &rules);
 }
+
+#[test]
+fn script_stats_pauses_and_descript_markdown_export() {
+    let w = sequence_words(&whole(), &transcripts());
+    assert!(is_filler_word("Um,"));
+    assert!(is_filler_word("uh"));
+    assert!(!is_filler_word("rivers."));
+
+    let pauses = sequence_pauses(&w, s(0.4));
+    assert_eq!(pauses.len(), 3);
+    assert_eq!(pauses[0].after_word, 3);
+    assert_eq!(pauses[0].duration(), s(2.0));
+
+    let single = single_pause_range(&w, 3, s(0.1), R).unwrap();
+    assert_eq!((single.start, single.end()), (s(1.80), s(3.60)));
+
+    let st = script_stats(&w, s(0.4));
+    assert_eq!(st.word_count, 20);
+    assert_eq!(st.filler_count, 2);
+    assert_eq!(st.pause_count, 3);
+    assert_eq!(st.speaker_count, 2);
+    assert_eq!(st.scene_count, 1);
+    assert!(st.wpm > 100.0);
+
+    let md = format_script_markdown("Interview Cut", &w, s(1.5), s(0.5), R, false);
+    assert!(md.contains("# Interview Cut"));
+    assert!(md.contains("/ Scene 1"));
+    assert!(md.contains("**Speaker 1**"));
+    assert!(md.contains("**Speaker 2**"));
+
+    let txt = format_script_text(&w, s(1.5));
+    assert!(txt.contains("Speaker 1: Welcome to the show."));
+    assert!(txt.contains("Speaker 2: Thanks for having me."));
+}

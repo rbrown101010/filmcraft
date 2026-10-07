@@ -423,5 +423,179 @@ pub fn blocks_to_captions(blocks: &[CaptionBlock], ctx: &mut EditCtx) -> Vec<Cap
         .collect()
 }
 
+/// Whether a single word token matches one of [`DEFAULT_FILLERS`] (case and punctuation ignored).
+pub fn is_filler_word(word: &str) -> bool {
+    let n = filmcraft_project::transcript::normalize_word(word);
+    !n.is_empty() && DEFAULT_FILLERS.contains(&n.as_str())
+}
+
+/// A pause between two consecutive sequence words (`words[after_word]` and `words[after_word + 1]`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeqPause {
+    pub after_word: usize,
+    pub start: Tick,
+    pub end: Tick,
+}
+
+impl SeqPause {
+    pub fn duration(&self) -> Tick {
+        (self.end - self.start).max(Tick::ZERO)
+    }
+}
+
+/// All pauses of at least `min_pause` between consecutive sequence words.
+pub fn sequence_pauses(words: &[SeqWord], min_pause: Tick) -> Vec<SeqPause> {
+    let mut out = Vec::new();
+    for (i, pair) in words.windows(2).enumerate() {
+        let (a, b) = (pair[0].end, pair[1].start);
+        if b > a && b - a >= min_pause {
+            out.push(SeqPause { after_word: i, start: a, end: b });
+        }
+    }
+    out
+}
+
+/// Frame-snapped timeline range to ripple-delete for the single pause immediately after
+/// `words[after_word]`, keeping `keep` of silence on both ends.
+pub fn single_pause_range(words: &[SeqWord], after_word: usize, keep: Tick, rate: FrameRate) -> Option<TimeRange> {
+    let w0 = words.get(after_word)?;
+    let w1 = words.get(after_word + 1)?;
+    let (a, b) = (w0.end, w1.start);
+    if b <= a {
+        return None;
+    }
+    let s = a + keep;
+    let e = b - keep;
+    let mut s2 = rate.snap(s);
+    if s2 < s {
+        s2 += rate.frame_duration();
+    }
+    let e2 = rate.snap(e);
+    (e2 > s2).then(|| TimeRange::from_bounds(s2, e2))
+}
+
+/// Summary statistics for a sequence or clip script.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScriptStats {
+    pub word_count: usize,
+    pub filler_count: usize,
+    pub pause_count: usize,
+    pub total_pause_ticks: Tick,
+    pub speaking_ticks: Tick,
+    pub span_ticks: Tick,
+    pub wpm: f64,
+    pub speaker_count: usize,
+    pub scene_count: usize,
+}
+
+/// Compute Descript-style script metrics for `words`.
+pub fn script_stats(words: &[SeqWord], min_pause: Tick) -> ScriptStats {
+    if words.is_empty() {
+        return ScriptStats::default();
+    }
+    let default_fillers: Vec<String> = DEFAULT_FILLERS.iter().map(|s| (*s).to_string()).collect();
+    let filler_count: usize = find_fillers(words, &default_fillers).iter().map(|r| r.len()).sum();
+    let pauses = sequence_pauses(words, min_pause);
+    let pause_count = pauses.len();
+    let total_pause_ticks = pauses.iter().fold(Tick::ZERO, |acc, p| acc + p.duration());
+    let speaking_ticks = words.iter().fold(Tick::ZERO, |acc, w| acc + (w.end - w.start).max(Tick::ZERO));
+    let span_ticks = (words.last().map_or(Tick::ZERO, |w| w.end) - words[0].start).max(Tick::ZERO);
+    let minutes = (span_ticks.seconds() / 60.0).max(1.0 / 60.0);
+    let wpm = if span_ticks > Tick::ZERO { words.len() as f64 / minutes } else { 0.0 };
+
+    let mut speakers: Vec<&str> = Vec::new();
+    let mut scenes = 0usize;
+    let mut prev_clip: Option<ClipId> = None;
+    for w in words {
+        if let Some(sp) = w.speaker.as_deref()
+            && !speakers.contains(&sp)
+        {
+            speakers.push(sp);
+        }
+        if prev_clip != Some(w.clip) {
+            scenes += 1;
+            prev_clip = Some(w.clip);
+        }
+    }
+    ScriptStats {
+        word_count: words.len(),
+        filler_count,
+        pause_count,
+        total_pause_ticks,
+        speaking_ticks,
+        span_ticks,
+        wpm,
+        speaker_count: speakers.len().max(1),
+        scene_count: scenes,
+    }
+}
+
+/// Format a sequence transcript as a Descript-style Markdown script with scene `/` markers,
+/// speaker headers, timecodes, and inline pause annotations.
+pub fn format_script_markdown(title: &str, words: &[SeqWord], gap: Tick, min_pause: Tick, rate: FrameRate, drop_frame: bool) -> String {
+    use filmcraft_time::{TimeDisplay, format_time};
+    let mut out = String::new();
+    let heading = if title.trim().is_empty() { "Sequence Script" } else { title.trim() };
+    out.push_str(&format!("# {heading}\n\n"));
+    if words.is_empty() {
+        out.push_str("_(No transcript words)_\n");
+        return out;
+    }
+    let paras = paragraphs(words, gap);
+    let mut scene_num = 0usize;
+    let mut last_clip: Option<ClipId> = None;
+    for p in paras {
+        if p.is_empty() {
+            continue;
+        }
+        let first = &words[p.start];
+        if last_clip != Some(first.clip) {
+            scene_num += 1;
+            last_clip = Some(first.clip);
+            let tc = format_time(first.start, rate, drop_frame, TimeDisplay::Timecode, 48_000);
+            out.push_str(&format!("---\n### / Scene {scene_num}  `{tc}`\n\n"));
+        }
+        let tc = format_time(first.start, rate, drop_frame, TimeDisplay::Timecode, 48_000);
+        let sp = first.speaker.as_deref().unwrap_or("Speaker");
+        out.push_str(&format!("**{sp}** `{tc}`\n"));
+        for wi in p.clone() {
+            if wi > p.start {
+                let prev_end = words[wi - 1].end;
+                let cur_start = words[wi].start;
+                if cur_start > prev_end && cur_start - prev_end >= min_pause {
+                    out.push_str(&format!(" _[{:.1}s pause]_ ", (cur_start - prev_end).seconds()));
+                } else {
+                    out.push(' ');
+                }
+            }
+            out.push_str(&words[wi].text);
+        }
+        out.push_str("\n\n");
+    }
+    out
+}
+
+/// Format a sequence transcript as clean plain text with speaker labels.
+pub fn format_script_text(words: &[SeqWord], gap: Tick) -> String {
+    let mut out = String::new();
+    for p in paragraphs(words, gap) {
+        if p.is_empty() {
+            continue;
+        }
+        if let Some(sp) = words[p.start].speaker.as_deref() {
+            out.push_str(sp);
+            out.push_str(": ");
+        }
+        for (k, wi) in p.enumerate() {
+            if k > 0 {
+                out.push(' ');
+            }
+            out.push_str(&words[wi].text);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests;

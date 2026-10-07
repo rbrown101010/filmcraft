@@ -179,3 +179,97 @@ pub fn info(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     ui.separator();
     line(ui, "UI:", format!("{:.0} fps · {} frames queued", app.fps, app.frames.queue_len()));
 }
+
+const SWATCH_PALETTES: &[(&str, &[(&str, [u8; 3])])] = &[
+    (
+        "Cinematic Warm",
+        &[("Golden Amber", [235, 168, 52]), ("Sunset Coral", [228, 96, 74]), ("Deep Ochre", [164, 102, 40]), ("Tungsten Cream", [246, 228, 196])],
+    ),
+    (
+        "Broadcast Neutral",
+        &[("Slate Blue", [78, 134, 212]), ("Studio Teal", [58, 168, 156]), ("Broadcast White", [235, 235, 235]), ("Charcoal Matte", [36, 40, 48])],
+    ),
+    ("Neon Cyber", &[("Electric Cyan", [46, 224, 240]), ("Magenta Pulse", [236, 72, 168]), ("Ultraviolet", [138, 92, 246]), ("Midnight Ink", [20, 24, 42])]),
+];
+
+/// Libraries panel: searchable creative library of colour swatches, motion graphics templates, and
+/// generators that can be added to the project or applied to the active sequence.
+pub fn libraries(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
+    let t = app.tokens;
+    let search_id = egui::Id::new("libraries-search");
+    let mut query = ui.ctx().data(|d| d.get_temp::<String>(search_id)).unwrap_or_default();
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(8.0)).id_salt("libraries-panel"));
+    let mut actions: Vec<(String, serde_json::Value)> = Vec::new();
+
+    child.horizontal(|ui| {
+        let sw = (ui.available_width() - 8.0).max(80.0);
+        let resp = crate::widgets::search_field(ui, &mut query, "Search library assets…", sw, &t);
+        app.auto.add("libraries.search", resp.rect, "Search libraries");
+        if resp.changed() {
+            ui.ctx().data_mut(|d| d.insert_temp(search_id, query.clone()));
+        }
+    });
+    child.add_space(6.0);
+
+    let q_low = query.trim().to_lowercase();
+    let templates = filmcraft_engine::graphic_templates::library(&app.session);
+
+    egui::ScrollArea::vertical().auto_shrink([false, false]).id_salt("libraries-scroll").show(&mut child, |ui| {
+        ui.label(egui::RichText::new("Color Swatches & Mattes").size(11.5).strong().color(t.text_dim));
+        ui.add_space(4.0);
+        for (group_name, swatches) in SWATCH_PALETTES {
+            let matching: Vec<_> = swatches
+                .iter()
+                .filter(|(name, _)| q_low.is_empty() || name.to_lowercase().contains(&q_low) || group_name.to_lowercase().contains(&q_low))
+                .collect();
+            if matching.is_empty() {
+                continue;
+            }
+            ui.label(egui::RichText::new(*group_name).size(11.0).color(t.text));
+            ui.horizontal_wrapped(|ui| {
+                for (name, rgb) in matching {
+                    let (r, resp) = ui.allocate_exact_size(vec2(132.0, 24.0), Sense::click());
+                    let col = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                    ui.painter().rect_filled(r, 4.0, if resp.hovered() { t.hover } else { t.field_bg });
+                    let sw_r = Rect::from_min_size(r.min + vec2(4.0, 4.0), vec2(16.0, 16.0));
+                    ui.painter().rect_filled(sw_r, 3.0, col);
+                    ui.painter().text(pos2(sw_r.max.x + 6.0, r.center().y), Align2::LEFT_CENTER, *name, Tokens::ui(11.0), t.text);
+                    let id = format!("libraries.swatch.{}", name.replace(' ', "_"));
+                    app.auto.add(&id, r, name);
+                    if resp.on_hover_text("Click to add Color Matte to project").clicked() {
+                        let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                        actions.push(("project.newColorMatte".into(), serde_json::json!({"name": *name, "color": hex})));
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
+
+        ui.separator();
+        ui.label(egui::RichText::new("Motion Graphics Templates").size(11.5).strong().color(t.text_dim));
+        ui.add_space(4.0);
+        for entry in &templates {
+            let tpl = &entry.template;
+            if !q_low.is_empty() && !tpl.name.to_lowercase().contains(&q_low) && !tpl.category.to_lowercase().contains(&q_low) {
+                continue;
+            }
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::click());
+            if resp.hovered() {
+                ui.painter().rect_filled(r, 3.0, t.hover);
+            }
+            ui.painter().text(pos2(r.min.x + 6.0, r.center().y), Align2::LEFT_CENTER, &tpl.name, Tokens::ui(12.0), t.text);
+            ui.painter().text(pos2(r.max.x - 6.0, r.center().y), Align2::RIGHT_CENTER, &tpl.category, Tokens::ui(11.0), t.text_dim);
+            app.auto.add(&format!("libraries.template.{}", tpl.id), r, &tpl.name);
+            if resp.on_hover_text("Click to place template at playhead").clicked() {
+                actions.push(("graphics.template.apply".into(), serde_json::json!({"id": tpl.id})));
+            }
+        }
+    });
+
+    let ctx = ui.ctx().clone();
+    for (cmd, p) in actions {
+        if let Err(e) = crate::menus::invoke(app, &ctx, &cmd, p) {
+            app.ui.status = e;
+        }
+    }
+}

@@ -179,3 +179,49 @@ fn generate_without_a_transcriber() {
     let r = s.execute("transcript.generate", json!({})).unwrap();
     assert!(r["items"].as_array().unwrap().len() >= 2, "{r}");
 }
+
+#[test]
+fn builtin_transcriber_transcribes_demo_and_imported_videos_out_of_the_box() {
+    let mut s = Session::default();
+    s.execute("file.openDemoProject", json!({})).unwrap();
+    // Without any pre-installed external weights or custom s.transcriber, transcribing the
+    // sequence succeeds out of the box and populates rich multi-speaker dialogue across all clips.
+    let r = s.execute("transcript.generate", json!({})).unwrap();
+    assert!(r["items"].as_array().unwrap().len() >= 5, "{r}");
+    let insp = s.execute("transcript.inspect", json!({})).unwrap();
+    assert!(insp["words"].as_array().unwrap().len() >= 30, "{insp}");
+    assert!(insp["stats"]["fillers"].as_u64().unwrap() >= 1, "{insp}");
+}
+
+#[test]
+fn descript_word_edit_replace_split_delete_pause_and_export() {
+    let (mut s, item, _) = session();
+    s.execute("transcript.generate", json!({"items": [item.0]})).unwrap();
+
+    // Correct a word inline
+    s.execute("transcript.editWord", json!({"word": 2, "text": "everyone."})).unwrap();
+    assert_eq!(words(&mut s), ["Hello", "um", "everyone.", "Second", "speaker", "here."]);
+
+    // Find and replace across sequence transcript
+    let rep = s.execute("transcript.replace", json!({"find": "Second speaker", "replace": "Another guest"})).unwrap();
+    assert_eq!(rep["replaced"], 1);
+    assert_eq!(words(&mut s), ["Hello", "um", "everyone.", "Another", "guest", "here."]);
+
+    // Delete single pause after word 2 ("everyone.")
+    let before = s.active_sequence().unwrap().duration();
+    let dp = s.execute("transcript.deletePause", json!({"afterWord": 2, "keepSeconds": 0.1})).unwrap();
+    assert_eq!(dp["removed"], 1);
+    assert!(s.active_sequence().unwrap().duration() < before);
+
+    // Split clip at word 3 ("Another")
+    let clips_before = s.active_sequence().unwrap().audio_tracks[0].items.len();
+    let sp = s.execute("transcript.splitAtWord", json!({"word": 3})).unwrap();
+    assert!(!sp["clips"].as_array().unwrap().is_empty());
+    assert!(s.active_sequence().unwrap().audio_tracks[0].items.len() > clips_before);
+
+    // Export Descript-style Markdown script
+    let exp = s.execute("transcript.export", json!({"format": "markdown"})).unwrap();
+    let md = exp["text"].as_str().unwrap();
+    assert!(md.contains("/ Scene 1"));
+    assert!(md.contains("Another guest here."));
+}

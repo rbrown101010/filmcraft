@@ -121,6 +121,10 @@ fn main() -> eframe::Result {
             }
             // voice-over recording reads the microphone through cpal
             session.voiceover.input = Some(Box::new(audio_in::CpalIn::new(&session.prefs.audio_hardware.device_class)));
+            if control_port.is_none() {
+                session.prefs.media_analysis.auto_transcribe = true;
+                session.prefs.media_analysis.auto_transcribe_scope = "allImported".into();
+            }
             let project = files.iter().find(|f| f.ends_with(".fcproj")).cloned();
             if let Some(p) = project {
                 if let Err(e) = session.execute("file.open", json!({"path": p})) {
@@ -137,11 +141,19 @@ fn main() -> eframe::Result {
                     }
                     None => {
                         let _ = session.execute("file.openDemoProject", json!({}));
+                        if control_port.is_none() {
+                            let _ = session.execute("transcript.generate", json!({}));
+                            session.history.undo.clear();
+                        }
                     }
                 }
             } else if !startup_flag && session.prefs.general.at_startup == "emptyProject" {
             } else if demo {
                 let _ = session.execute("file.openDemoProject", json!({}));
+                if control_port.is_none() {
+                    let _ = session.execute("transcript.generate", json!({}));
+                    session.history.undo.clear();
+                }
             }
             let media: Vec<String> = files.iter().filter(|f| !f.ends_with(".fcproj")).cloned().collect();
             if !media.is_empty() {

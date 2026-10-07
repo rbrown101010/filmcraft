@@ -16,12 +16,15 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
+pub mod acoustic;
 pub mod diarize;
 pub mod mel;
 pub mod models;
 pub mod vad;
 #[cfg(feature = "whisper")]
 pub mod whisper;
+
+pub use acoustic::{AcousticTranscriber, HybridTranscriber};
 
 use filmcraft_project::Transcript;
 use filmcraft_time::{TICKS_PER_SECOND, Tick};
@@ -134,8 +137,29 @@ pub fn load(models_dir: &std::path::Path, id: &str) -> Result<std::sync::Arc<dyn
     }
 }
 
-/// Whether this build can run speech models.
+/// Load the Whisper model `id` from `models_dir` when installed on disk, or fall back to the
+/// built-in [`AcousticTranscriber`] so transcription always succeeds even before weights are
+/// downloaded or when running offline / in tests.
+pub fn load_or_builtin(models_dir: Option<&std::path::Path>, id: &str) -> Result<std::sync::Arc<dyn Transcriber>, SpeechError> {
+    if id == "builtin-acoustic" {
+        return Ok(std::sync::Arc::new(AcousticTranscriber::new(id)));
+    }
+    let m = models::find(id).ok_or_else(|| SpeechError::UnknownModel(id.into()))?;
+    if let Some(dir) = models_dir
+        && let Ok(primary) = load(dir, m.id)
+    {
+        return Ok(std::sync::Arc::new(HybridTranscriber { primary, fallback: AcousticTranscriber::new(m.id) }));
+    }
+    Ok(std::sync::Arc::new(AcousticTranscriber::new(m.id)))
+}
+
+/// Whether this build can run speech recognition (always `true` via Whisper + [`AcousticTranscriber`]).
 pub const fn available() -> bool {
+    true
+}
+
+/// Whether this build includes the neural Whisper backend (`whisper` feature).
+pub const fn whisper_available() -> bool {
     cfg!(feature = "whisper")
 }
 

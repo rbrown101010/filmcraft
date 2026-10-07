@@ -478,7 +478,7 @@ pub(crate) fn place_item(
     let media = s.media.clone();
     let scaling = s.prefs.media.default_media_scaling.clone();
     let is_media = matches!(pi.kind, ItemKind::Media(_) | ItemKind::Subclip { .. });
-    s.edit(label, |p, st| {
+    let ids = s.edit(label, |p, st| {
         let seq = p.sequence(seq_id).ok_or(EngineError::NoSequence)?;
         let rate = seq.settings.frame_rate;
         let frame = (seq.settings.width, seq.settings.height);
@@ -536,7 +536,9 @@ pub(crate) fn place_item(
         p.next_id = next;
         st.selection = ids.clone();
         Ok(ids)
-    })
+    })?;
+    crate::transcript::maybe_auto_transcribe_sequence(s);
+    Ok(ids)
 }
 
 pub(crate) fn source_range(s: &Session) -> Option<(ItemId, TimeRange)> {
